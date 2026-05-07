@@ -1,49 +1,45 @@
 package com.universidad.pedidoservice.service;
 
-import com.universidad.pedidoservice.domain.Pedido;
-import com.universidad.pedidoservice.domain.Producto;
+import com.universidad.pedidoservice.domain.*;
 import com.universidad.pedidoservice.repository.PedidoRepository;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
+import java.util.Arrays;
 
 @Service
 public class PedidoService {
 
-    @Autowired
-    private PedidoRepository repo;
+    private final PedidoRepository repo;
+    private final NotificacionService notificacion;
 
-    public String procesarPedido(Long clienteId, String clienteNombre,
-                                 String clienteEmail, String clienteTelefono,
-                                 String clienteDireccion, String clienteCiudad,
-                                 String clienteCodigoPostal, List<Long> productosIds,
-                                 List<Integer> cantidades, String metodoPago,
-                                 boolean esUrgente, String codigoDescuento) {
+    public PedidoService(PedidoRepository repo,
+                         NotificacionService notificacion) {
+        this.repo = repo;
+        this.notificacion = notificacion;
+    }
 
-        if (clienteId == null || clienteNombre == null
-                || clienteNombre.isBlank() || clienteEmail == null
-                || !clienteEmail.contains("@")) {
-            return "ERROR_CLIENTE";
-        }
+    public String procesarPedido(Long clienteId, DatosCliente cliente,
+                                 LineaPedido[] lineas, String metodoPago,
+                                 boolean esUrgente, CodigoDescuento descuento) {
+        double total = calcularTotal(lineas);
+        double totalConDescuento = aplicarDescuento(total, descuento);
+        notificacion.notificarPedido(cliente, esUrgente);
+        return persistirPedido(clienteId, cliente, totalConDescuento);
+    }
 
-        double total = 0;
-        for (int i = 0; i < productosIds.size(); i++) {
-            Producto p = repo.findProductoById(productosIds.get(i));
-            if (p == null) return "ERROR_PRODUCTO";
-            total += p.getPrecio() * cantidades.get(i);
-        }
+    private double calcularTotal(LineaPedido[] lineas) {
+        return Arrays.stream(lineas)
+                .mapToDouble(l -> l.getPrecioUnitario() * l.getCantidad())
+                .sum();
+    }
 
-        if (codigoDescuento != null && codigoDescuento.equals("VIP10")) {
-            total = total * 0.90;
-        } else if (codigoDescuento != null && codigoDescuento.equals("NEW20")) {
-            total = total * 0.80;
-        }
+    private double aplicarDescuento(double total, CodigoDescuento descuento) {
+        return descuento != null ? total * (1 - descuento.getPorcentaje()) : total;
+    }
 
-        System.out.println("Enviando email a: " + clienteEmail);
-        System.out.println("Pedido urgente: " + esUrgente);
-
-        Pedido pedido = new Pedido(clienteId, clienteNombre, total);
+    private String persistirPedido(Long clienteId, DatosCliente cliente,
+                                   double total) {
+        Pedido pedido = new Pedido(clienteId, cliente.getNombre(), total);
         return "OK_" + repo.save(pedido).getId();
     }
 }
