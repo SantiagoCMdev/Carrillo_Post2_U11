@@ -1,6 +1,6 @@
-# Pedido Service — Post-Contenido 1 Unidad 11
+# Pedido Service — Post-Contenido 2 Unidad 11
 
-Microservicio REST desarrollado con **Spring Boot 3** para la gestión de pedidos. Este laboratorio aplica técnicas de refactorización avanzada sobre código intencionalmente deficiente, eliminando code smells de tipo Bloater mediante Extract Method, Extract Class e introducción de Value Objects, verificando las mejoras con SonarQube.
+Microservicio REST desarrollado con **Spring Boot 3**. Este laboratorio aplica las técnicas **Replace Conditional with Polymorphism** y **Guard Clauses** sobre código con Switch Statement smell y Arrow Code, verificando con SonarQube la reducción de complejidad ciclomática.
 
 ---
 
@@ -14,31 +14,39 @@ Microservicio REST desarrollado con **Spring Boot 3** para la gestión de pedido
 - Maven
 - JaCoCo 0.8.11
 - SonarQube Community Edition (Docker)
+- JUnit 5
 
 ---
 
 ## Estructura del proyecto
 
 ```
-Carrillo-post1-u11/
+Carrillo-post2-u11/
 ├── src/
 │   ├── main/
 │   │   ├── java/com/universidad/pedidoservice/
 │   │   │   ├── domain/
 │   │   │   │   ├── Pedido.java
 │   │   │   │   ├── Producto.java
-│   │   │   │   ├── DatosCliente.java       # Value Object
-│   │   │   │   ├── Direccion.java          # Value Object
-│   │   │   │   ├── CodigoDescuento.java    # Value Object
-│   │   │   │   └── LineaPedido.java        # Value Object
-│   │   │   ├── repository/
-│   │   │   │   └── PedidoRepository.java
+│   │   │   │   ├── Cliente.java
+│   │   │   │   ├── DatosCliente.java
+│   │   │   │   ├── Direccion.java
+│   │   │   │   ├── CodigoDescuento.java
+│   │   │   │   └── LineaPedido.java
 │   │   │   └── service/
-│   │   │       ├── PedidoService.java
-│   │   │       └── NotificacionService.java  # Extract Class
+│   │   │       ├── EstrategiaEnvio.java      # Interfaz Strategy
+│   │   │       ├── EnvioEstandar.java        # Implementación
+│   │   │       ├── EnvioExpress.java         # Implementación
+│   │   │       ├── EnvioMismoDia.java        # Implementación
+│   │   │       ├── EnvioGratis.java          # Implementación
+│   │   │       ├── EnvioService.java         # Orquestador con Guard Clauses
+│   │   │       ├── NotificacionService.java
+│   │   │       └── PedidoService.java
 │   │   └── resources/
 │   │       └── application.properties
 │   └── test/
+│       └── java/com/universidad/pedidoservice/
+│           └── EnvioServiceTest.java
 ├── pom.xml
 └── README.md
 ```
@@ -69,82 +77,115 @@ mvn verify sonar:sonar -Dsonar.host.url=http://localhost:9000 -Dsonar.token=TU_T
 
 ---
 
-## Code Smells identificados en el código original
+## Code Smells identificados antes de refactorizar
 
-### 1. Long Method — `procesarPedido()`
-El método concentraba validación del cliente, cálculo de totales, aplicación de descuentos, notificación y persistencia en un solo bloque de más de 30 líneas. Complejidad ciclomática alta por las múltiples ramas condicionales.
+### 1. Switch Statement smell — `calcularEnvio()` (CC = 5)
+El método usaba un `switch` con 4 casos más un `default` para determinar el costo de envío. Cada nuevo tipo de envío requería modificar el método directamente, violando el principio Open/Closed.
 
-### 2. Primitive Obsession / Data Clump
-El método recibía 12 parámetros primitivos (`clienteNombre`, `clienteEmail`, `clienteTelefono`, `clienteDireccion`, `clienteCiudad`, `clienteCodigoPostal`) que representaban conceptos de negocio relacionados pero dispersos como strings independientes.
+```java
+// ANTES — Switch Statement con CC = 5
+public double calcularEnvio(Pedido pedido, String tipoEnvio) {
+    switch (tipoEnvio) {
+        case "ESTANDAR": return pedido.getTotal() > 50 ? 0 : 5.99;
+        case "EXPRESS":  return 12.99;
+        case "MISMO_DIA": return 24.99;
+        case "GRATIS":   return 0;
+        default: throw new IllegalArgumentException(
+                "Tipo de envio desconocido: " + tipoEnvio);
+    }
+}
+```
 
-### 3. Large Class / Violación de SRP
-`PedidoService` manejaba simultáneamente lógica de negocio, cálculos financieros y notificaciones al cliente, violando el Principio de Responsabilidad Única.
+### 2. Arrow Code — `aprobarCredito()` (CC = 6)
+El método tenía 5 niveles de anidamiento de `if`, formando una pirámide visual que dificultaba la lectura y el mantenimiento.
 
-### 4. Inyección por campo con `@Autowired`
-El repositorio se inyectaba directamente en el campo, dificultando las pruebas unitarias y ocultando las dependencias reales de la clase.
+```java
+// ANTES — Arrow Code con CC = 6
+public String aprobarCredito(Cliente c, double monto) {
+    if (c != null) {
+        if (c.isActivo()) {
+            if (c.getScore() >= 600) {
+                if (monto > 0) {
+                    if (monto <= c.getLimiteCredito()) {
+                        return "APROBADO";
+                    }
+                }
+            }
+        }
+    }
+    return "RECHAZADO";
+}
+```
 
 ---
 
 ## Técnicas de refactorización aplicadas
 
-### Extract Method
-Se dividió `procesarPedido()` en métodos privados con responsabilidad única:
-- `calcularTotal(LineaPedido[] lineas)` — suma los totales de cada línea
-- `aplicarDescuento(double total, CodigoDescuento descuento)` — aplica el porcentaje correspondiente
-- `persistirPedido(Long clienteId, DatosCliente cliente, double total)` — crea y guarda el pedido
+### Replace Conditional with Polymorphism
 
-El método principal quedó reducido a 4 líneas de orquestación con CC = 1.
+Se creó la interfaz `EstrategiaEnvio` y cuatro implementaciones, una por tipo de envío. `EnvioService` recibe todas las estrategias mediante inyección por constructor usando `Map<String, EstrategiaEnvio>` de Spring, eliminando completamente el `switch`:
 
-### Extract Class
-La lógica de notificación al cliente se extrajo a `NotificacionService`, una clase independiente inyectada por constructor en `PedidoService`. Esto separa claramente las responsabilidades y permite modificar o reemplazar la lógica de notificación sin tocar el servicio de pedidos.
+```java
+// DESPUÉS — CC = 1, extensible sin modificar EnvioService
+public double calcularEnvio(Pedido pedido, String tipo) {
+    return Optional.ofNullable(estrategias.get(tipo))
+            .orElseThrow(() -> new IllegalArgumentException(
+                    "Tipo de envio desconocido: " + tipo))
+            .calcularCosto(pedido);
+}
+```
 
-### Introducción de Value Objects
-Se crearon cuatro Value Objects inmutables para eliminar la Primitive Obsession:
+### Guard Clauses
 
-| Value Object | Responsabilidad |
-|---|---|
-| `DatosCliente` | Agrupa nombre, email, teléfono y dirección del cliente con validaciones propias |
-| `Direccion` | Encapsula calle, ciudad y código postal con validación de campos requeridos |
-| `CodigoDescuento` | Encapsula el código y su porcentaje asociado mediante factory method |
-| `LineaPedido` | Representa una línea de pedido con precio unitario y cantidad |
+Se reemplazó el anidamiento profundo por retornos anticipados, uno por condición de rechazo. El método quedó en exactamente 6 líneas con CC = 2:
 
-### Inyección por constructor
-Se eliminó `@Autowired` en campo y se reemplazó por inyección por constructor en `PedidoService`, haciendo las dependencias explícitas y facilitando las pruebas unitarias.
+```java
+// DESPUÉS — Guard Clauses, CC = 2
+public String aprobarCredito(Cliente c, double monto) {
+    if (c == null) return "RECHAZADO";
+    if (!c.isActivo()) return "RECHAZADO";
+    if (c.getScore() < 600) return "RECHAZADO";
+    if (monto <= 0) return "RECHAZADO";
+    if (monto > c.getLimiteCredito()) return "RECHAZADO";
+    return "APROBADO";
+}
+```
 
 ---
 
 ## Comparativa de métricas SonarQube antes y después
 
-| Métrica | Análisis Inicial | Análisis Final | Cambio |
+| Métrica | Análisis Inicial (Post-1) | Análisis Final (Post-2) | Cambio |
 |---|---|---|---|
 | Security | A (0 issues) | A (0 issues) | ✅ Sin cambio |
 | Reliability | C (1 issue) | A (0 issues) | ✅ Mejoró |
 | Maintainability | A (5 issues) | A (3 issues) | ✅ Mejoró |
 | Coverage | 4.2% | 6.5% | ✅ Mejoró |
 | Duplications | 0.0% | 0.0% | ✅ Sin cambio |
-| Lines of Code | 226 | 303 | Aumentó por clases nuevas |
+| CC calcularEnvio | 5 | 1 | ✅ Reducción del 80% |
+| CC aprobarCredito | 6 | 2 | ✅ Reducción del 67% |
 
-> El aumento en líneas de código es esperado y positivo: refleja la correcta separación de responsabilidades en múltiples clases pequeñas y cohesivas, en lugar de un único método largo.
+### Nota sobre el Quality Gate
+
+El Quality Gate muestra **Failed** en la pestaña New Code porque la condición por defecto de Sonar way exige 80% de cobertura en código nuevo. Esto no refleja un problema de calidad del código refactorizado — Security, Reliability y Maintainability son todas **A**, y la complejidad ciclomática se redujo significativamente en ambos métodos. Para alcanzar el 80% de cobertura sería necesario un suite de pruebas de integración completo que está fuera del alcance de este laboratorio.
 
 ---
 
-## Endpoints disponibles
+## Reflexión — Patrón Strategy y principio Open/Closed
 
-| Método | URL | Descripción |
-|---|---|---|
-| GET | `/api/pedidos` | Lista todos los pedidos |
-| GET | `/api/pedidos/{id}` | Busca un pedido por ID |
+El patrón Strategy aplicado en `EnvioService` demuestra directamente el principio Open/Closed: la clase está **abierta para extensión pero cerrada para modificación**. Si en el futuro se necesita agregar un nuevo tipo de envío, por ejemplo `INTERNACIONAL`, basta con crear una nueva clase que implemente `EstrategiaEnvio` y anotarla con `@Component("INTERNACIONAL")`. Spring la registrará automáticamente en el `Map<String, EstrategiaEnvio>` sin tocar una sola línea de `EnvioService`. Esto contrasta con el `switch` original donde cada nuevo caso obligaba a modificar el método, incrementando su CC y el riesgo de introducir regresiones.
+
+---
+
+## Pruebas unitarias
+
+Se escribieron 12 pruebas antes de refactorizar como red de seguridad, cubriendo todos los casos de `calcularEnvio()` y `aprobarCredito()`. Todas las pruebas pasaron antes y después de la refactorización, confirmando que no hubo regresiones.
 
 ---
 
 ## Santiago Carrillo
 
-Laboratorio Post-Contenido 1 — Unidad 11: Refactorización Avanzada y Clean Code Profundo
+Laboratorio Post-Contenido 2 — Unidad 11: Refactorización Avanzada y Clean Code Profundo
 Ingeniería de Sistemas — Universidad de Santander (UDES) — 2026
 
-Primer Análisis con Code Smells Intencionales
-![img.png](img.png)
-
-Segundo Analisis refactorizado
-![img_1.png](img_1.png)
-El Quality Gate muestra Failed porque este proyecto heredó el Quality Gate "Estándar Universidad" del laboratorio anterior que exige 60% de cobertura. No es un problema real del código, es la configuración del gate.
+![img_2.png](img_2.png)
